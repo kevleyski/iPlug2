@@ -33,11 +33,15 @@
   #pragma warning( push )
   #pragma warning( disable : 4244 )
   #pragma warning( disable : 5030 )
-  #include "SkSVGDOM.h"
+  #include "modules/svg/include/SkSVGDOM.h"
   #include "include/core/SkCanvas.h"
   #include "include/core/SkStream.h"
   #include "src/xml/SkDOM.h"
   #pragma warning( pop )
+  #pragma comment(lib, "svg.lib")
+  #pragma comment(lib, "skshaper.lib")
+  #pragma comment(lib, "skunicode_core.lib")
+  #pragma comment(lib, "skunicode_icu.lib")
 #else
   #include "nanosvg.h"
 #endif
@@ -49,8 +53,8 @@
 #elif defined IGRAPHICS_SKIA
   #pragma warning( push )
   #pragma warning( disable : 4244 )
-  #include "SkImage.h"
-  #include "SkSurface.h"
+  #include "include/core/SkImage.h"
+  #include "include/core/SkSurface.h"
   #pragma warning( pop )
   struct SkiaDrawable
   {
@@ -59,10 +63,6 @@
     sk_sp<SkSurface> mSurface;
   };
   #define BITMAP_DATA_TYPE SkiaDrawable*
-#elif defined IGRAPHICS_CANVAS
-  #include <emscripten.h>
-  #include <emscripten/val.h>
-  #define BITMAP_DATA_TYPE emscripten::val*
 #else // NO_IGRAPHICS
   #define BITMAP_DATA_TYPE void*;
 #endif

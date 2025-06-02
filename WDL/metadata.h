@@ -124,6 +124,7 @@ void XMLCompliantAppend(WDL_FastString *str, const char *txt, bool is_value)
       case '>': str->Append("&gt;"); break;
       case '&': str->Append("&amp;"); break;
       case ' ': str->Append(is_value ? " " : "_"); break;
+      case ':': if (!is_value) { str->Append("_"); break; } // else fall through
       default: str->Append(&c,1); break;
     }
   }
@@ -519,6 +520,12 @@ int PackIXMLChunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata, int pa
     if (!sec) continue;
 
     key += strlen(sec)+1;
+
+    // metadata can get recursively re-encoded in ixml
+    if (!strncmp(key, "ASWG:", 5)) continue;
+    if (!strncmp(key, "BWF:", 4)) continue;
+    if (!strncmp(key, "IXML:", 5)) continue;
+
     if (!strcmp(sec, "BWF"))
     {
       if (!strcmp(key, "Description")) key="BWF_DESCRIPTION";
@@ -593,8 +600,8 @@ int PackIXMLChunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata, int pa
     int len=ixmllen+1+junklen;
     if (len < padtolen) len=padtolen;
     if (len&1) ++len;
-    unsigned char *p=(unsigned char*)hb->Resize(olen+len);
-    if (p)
+    unsigned char *p=(unsigned char*)hb->ResizeOK(olen+len);
+    if (WDL_NORMALLY(p != NULL))
     {
       memcpy(p+olen, ixml.Get(), ixmllen);
       memset(p+olen+ixmllen, 0, len-ixmllen);
@@ -731,8 +738,8 @@ int PackXMPChunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata)
   int xmplen=xmp.GetLength();
   int len=xmplen+1;
   if (len&1) ++len;
-  unsigned char *p=(unsigned char*)hb->Resize(olen+len);
-  if (p)
+  unsigned char *p=(unsigned char*)hb->ResizeOK(olen+len);
+  if (WDL_NORMALLY(p != NULL))
   {
     memcpy(p+olen, xmp.Get(), xmplen);
     memset(p+olen+xmplen, 0, len-xmplen);
@@ -777,9 +784,10 @@ int PackVorbisFrame(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata, bool
     }
   }
 
-  unsigned char *buf=(unsigned char*)hb->Resize(olen+framelen)+olen;
-  if (buf)
+  unsigned char *buf=(unsigned char*)hb->ResizeOK(olen+framelen);
+  if (WDL_NORMALLY(buf != NULL))
   {
+    buf += olen;
     unsigned char *p=buf;
     memcpy(p, &vendorlen, 4);
     p += 4;
@@ -905,9 +913,10 @@ int PackApeChunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata)
   }
   if (!apelen) return false;
 
-  unsigned char *buf=(unsigned char*)hb->Resize(olen+apelen)+olen;
-  if (buf)
+  unsigned char *buf=(unsigned char*)hb->ResizeOK(olen+apelen);
+  if (WDL_NORMALLY(buf != NULL))
   {
+    buf += olen;
     unsigned char *p=buf;
     memcpy(p, "APETAGEX", 8);
     p += 8;
@@ -1245,39 +1254,85 @@ bool HandleMexMetadataRequest(const char *mexkey, char *buf, int buflen,
 }
 
 
+const char *prefpos_keys[] = // value is samples unless noted
+{
+  "BWF:TimeReference",
+  "ID3:TXXX:TIME_REFERENCE",
+  "IXML:BEXT:BWF_TIME_REFERENCE_HIGH",
+  "IXML:BEXT:BWF_TIME_REFERENCE_LOW",
+  "VORBIS:TIME_REFERENCE",
+  "XMP:dm/relativeTimestamp", // value is ms
+};
+
+bool GetMetadataPrefPos(WDL_StringKeyedArray<char*> *metadata, int srate, double *prefpos)
+{
+  if (!metadata) return false;
+  if (WDL_NOT_NORMALLY(srate <= 1)) return false;
+
+  for (int i=0; i < sizeof(prefpos_keys)/sizeof(prefpos_keys[0]); ++i)
+  {
+    const char *val=metadata->Get(prefpos_keys[i]);
+    if (val && val[0])
+    {
+      if (prefpos)
+      {
+        *prefpos = atof(val);
+        if (!strcmp(prefpos_keys[i], "XMP:dm/relativeTimestamp")) *prefpos *= 0.001;
+        else *prefpos /= (double)srate;
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void WriteMetadataPrefPos(double prefpos, int srate,  // prefpos <= 0.0 to clear
   WDL_StringKeyedArray<char*> *metadata)
 {
   if (!metadata) return;
 
-  metadata->Delete("BWF:TimeReference");
-  metadata->Delete("ID3:TXXX:TIME_REFERENCE");
-  metadata->Delete("IXML:BEXT:BWF_TIME_REFERENCE_HIGH");
-  metadata->Delete("IXML:BEXT:BWF_TIME_REFERENCE_LOW");
-  metadata->Delete("XMP:dm/relativeTimestamp");
-  metadata->Delete("VORBIS:TIME_REFERENCE");
+  for (int i=0; i < sizeof(prefpos_keys)/sizeof(prefpos_keys[0]); ++i)
+  {
+    metadata->Delete(prefpos_keys[i]);
+  }
 
-  if (prefpos > 0.0 && srate > 1)
+  if (prefpos > 0.0 && WDL_NORMALLY(srate > 1))
   {
     char buf[128];
-    if (srate > 0.0)
-    {
-      snprintf(buf, sizeof(buf), "%.0f", floor(prefpos*(double)srate));
-      metadata->Insert("BWF:TimeReference", strdup(buf));
-      // BWF:TimeReference causes IXML:BEXT element to be written as well
-      metadata->Insert("ID3:TXXX:TIME_REFERENCE", strdup(buf));
-      metadata->Insert("VORBIS:TIME_REFERENCE", strdup(buf));
-    }
-    snprintf(buf, sizeof(buf), "%.0f", floor(prefpos*1000.0));
+
+    snprintf(buf, sizeof(buf), "%.0f", floor(prefpos*(double)srate));
+    metadata->Insert("BWF:TimeReference", strdup(buf));
+    // BWF:TimeReference causes IXML:BEXT element to be written as well
+    metadata->Insert("ID3:TXXX:TIME_REFERENCE", strdup(buf));
+    metadata->Insert("VORBIS:TIME_REFERENCE", strdup(buf));
+
+    snprintf(buf, sizeof(buf), "%09.0f", floor(prefpos*1000.0));
     metadata->Insert("XMP:dm/relativeTimestamp", strdup(buf));
   }
 }
 
+bool IsImageMetadata(const char *key)
+{
+  return !strncmp(key, "ID3:APIC", 8) || !strncmp(key, "FLACPIC:APIC", 12);
+}
+
+void DeleteAllImageMetadata(WDL_StringKeyedArray<char*> *metadata)
+{
+  for (int i=0; i < metadata->GetSize(); ++i)
+  {
+    const char *key;
+    metadata->Enumerate(i, &key);
+    if (IsImageMetadata(key)) metadata->DeleteByIndex(i--);
+  }
+}
 
 void AddMexMetadata(WDL_StringKeyedArray<char*> *mex_metadata,
   WDL_StringKeyedArray<char*> *metadata, int srate)
 {
   if (!mex_metadata || !metadata) return;
+
+  bool added_img_metadata=false;
 
   for (int idx=0; idx < mex_metadata->GetSize(); ++idx)
   {
@@ -1290,6 +1345,17 @@ void AddMexMetadata(WDL_StringKeyedArray<char*> *mex_metadata,
       WriteMetadataPrefPos((double)ms/1000.0, srate, metadata);
       // caller may still have to do stuff if prefpos is represented
       // in some other way outside the metadata we handle, like wavpack
+      continue;
+    }
+
+    if (IsImageMetadata(mexkey))
+    {
+      if (!added_img_metadata)
+      {
+        added_img_metadata=true;
+        DeleteAllImageMetadata(metadata);
+      }
+      metadata->Insert(mexkey, strdup(val));
       continue;
     }
 
@@ -1536,7 +1602,7 @@ void DeleteID3Raw(WDL_PtrList<ID3RawTag> *rawtags, const char *key)
   key += 4;
   const char *subkey=NULL;
   int suboffs=0, sublen=0;
-  if (key[4])
+  if (key[4] && strncmp(key, "APIC", 4))
   {
     if (!strncmp(key, "TXXX:", 5)) suboffs=3;
     else if (!strncmp(key, "PRIV:", 5)) suboffs=2;
@@ -1653,7 +1719,7 @@ int PackID3Chunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata,
       int desclen=wdl_min(strlen(desc), 63);
 
       int apic_hdrlen=1+strlen(mime)+1+1+desclen+1;
-      char *p=(char*)apic_hdr.Resize(apic_hdrlen);
+      char *p=(char*)apic_hdr.ResizeOK(apic_hdrlen);
       if (p)
       {
         *p++=3; // UTF-8
@@ -1701,9 +1767,10 @@ int PackID3Chunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata,
   if (id3len)
   {
     id3len += 10;
-    unsigned char *buf=(unsigned char*)hb->Resize(olen+id3len)+olen;
-    if (buf)
+    unsigned char *buf=(unsigned char*)hb->ResizeOK(olen+id3len);
+    if (WDL_NORMALLY(buf != NULL))
     {
+      buf += olen;
       chapcnt=0;
       unsigned char *p=buf;
       memcpy(p,"ID3\x04\x00\x00", 6);
@@ -1774,11 +1841,11 @@ int PackID3Chunk(WDL_HeapBuf *hb, WDL_StringKeyedArray<char*> *metadata,
           memcpy(p, "\x00\x00\x03", 3); // UTF-8
           p += 3;
           if (lang && strlen(lang) >= 3 &&
-              tolower(*lang) >= 'a' && tolower(*lang) <= 'z')
+              tolower_safe(*lang) >= 'a' && tolower_safe(*lang) <= 'z')
           {
-            *p++=tolower(*lang++);
-            *p++=tolower(*lang++);
-            *p++=tolower(*lang++);
+            *p++=tolower_safe(*lang++);
+            *p++=tolower_safe(*lang++);
+            *p++=tolower_safe(*lang++);
             *p++=0;
           }
           else

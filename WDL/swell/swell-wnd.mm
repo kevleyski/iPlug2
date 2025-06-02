@@ -1635,7 +1635,7 @@ LONG_PTR GetWindowLong(HWND hwnd, int idx)
     return (LONG_PTR)[pid getSwellExtraData:idx];
   }
   
-  WDL_ASSERT(false); // caller may be using a GWLP_* which is not yet implemented, or an extra index on a non-hwndchild
+  WDL_ASSERT(idx == GWLP_USERDATA); // assert if unknown control, unless GWLP_USERDATA
   SWELL_END_TRY(;)
   return 0;
 }
@@ -2245,7 +2245,7 @@ void GetClientRect(HWND hwnd, RECT *r)
 void SetWindowPos(HWND hwnd, HWND hwndAfter, int x, int y, int cx, int cy, int flags)
 {
   if (WDL_NOT_NORMALLY(!hwnd)) return;
- 
+  WDL_ASSERT((flags & SWP_NOSIZE) || cx>=0);
   SWELL_BEGIN_TRY
   NSWindow *nswnd; // content views = move window
   if (hwnd && [(id)hwnd isKindOfClass:[NSView class]] && (nswnd=[(NSView *)hwnd window]) && [nswnd contentView]==(id)hwnd)
@@ -2627,7 +2627,7 @@ HWND GetForegroundWindow()
 //    if (ret == [window contentView]) return (HWND) window;
     return (HWND) ret;
   }
-  return (HWND)window;
+  return (HWND)[window contentView];
   SWELL_END_TRY(;)
   return NULL;
 }
@@ -2650,6 +2650,7 @@ HWND GetFocus()
 
     return (HWND) ret;
   }
+  return (HWND) [window contentView];
   SWELL_END_TRY(;)
   return 0;
 }
@@ -2802,12 +2803,16 @@ BOOL GetDlgItemText(HWND hwnd, int idx, char *text, int textlen)
   return FALSE;
 }
 
-void CheckDlgButton(HWND hwnd, int idx, int check)
+BOOL CheckDlgButton(HWND hwnd, int idx, int check)
 {
   NSView *pvw=(NSView *)GetDlgItem(hwnd,idx);
-  if (WDL_NOT_NORMALLY(!pvw)) return;
+  if (WDL_NOT_NORMALLY(!pvw)) return FALSE;
   if ([pvw isKindOfClass:[NSButton class]]) 
+  {
     [(NSButton*)pvw setState:(check&BST_INDETERMINATE)?NSMixedState:((check&BST_CHECKED)?NSOnState:NSOffState)];
+    return TRUE;
+  }
+  return FALSE;
 }
 
 
@@ -5228,7 +5233,8 @@ int ListView_HitTest(HWND h, LVHITTESTINFO *pinf)
 
   if (x < 0) pinf->flags |= LVHT_TOLEFT;
   if (x >= r.size.width) pinf->flags |= LVHT_TORIGHT;
-  if (y < 0) pinf->flags |= LVHT_ABOVE;
+  const int hdrh = SWELL_GetListViewHeaderHeight(h);
+  if (y < hdrh) pinf->flags |= LVHT_ABOVE;
   if (y >= r.size.height) pinf->flags |= LVHT_BELOW;
   
   if (!pinf->flags)
@@ -5249,7 +5255,7 @@ int ListView_HitTest(HWND h, LVHITTESTINFO *pinf)
     }
     else 
     {
-      pinf->flags = y < 10 && ListView_GetItemCount(h)>0 ? LVHT_ABOVE : LVHT_NOWHERE;
+      pinf->flags = y < hdrh+10 && ListView_GetItemCount(h)>0 ? LVHT_ABOVE : LVHT_NOWHERE;
     }
   }
   
